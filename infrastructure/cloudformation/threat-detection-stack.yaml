@@ -1,0 +1,370 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Cloud Threat Detection Pipeline - Full Infrastructure Stack
+  Deploys CloudTrail, CloudWatch Logs, Lambda, SNS, SQS, and DynamoDB
+  for real-time threat detection and alerting.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment environment
+
+  AlertEmailAddress:
+    Type: String
+    Description: Email address for high-severity threat alerts
+    AllowedPattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+
+  BaselineRegions:
+    Type: String
+    Default: "us-east-1,us-west-2"
+    Description: Comma-separated list of approved AWS regions
+
+  LambdaCodeBucket:
+    Type: String
+    Description: S3 bucket containing the Lambda deployment package
+
+  LambdaCodeKey:
+    Type: String
+    Default: "lambda/threat-detection.zip"
+    Description: S3 key for the Lambda deployment package
+
+Globals:
+  Tags:
+    - Key: Project
+      Value: cloud-threat-detection
+    - Key: Environment
+      Value: !Ref Environment
+    - Key: ManagedBy
+      Value: CloudFormation
+
+Resources:
+
+  # S3 BUCKET: CloudTrail Log Storage
+
+  CloudTrailLogsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub "cloud-threat-detection-cloudtrail-${AWS::AccountId}-${Environment}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 90
+                StorageClass: STANDARD_IA
+              - TransitionInDays: 365
+                StorageClass: GLACIER
+
+  CloudTrailLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CloudTrailLogsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AWSCloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt CloudTrailLogsBucket.Arn
+          - Sid: AWSCloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub "${CloudTrailLogsBucket.Arn}/AWSLogs/${AWS::AccountId}/*"
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+
+  # CLOUDTRAIL: Multi-Region Trail
+
+  ThreatDetectionTrail:
+    Type: AWS::CloudTrail::Trail
+    DependsOn: CloudTrailLogsBucketPolicy
+    Properties:
+      TrailName: !Sub "threat-detection-trail-${Environment}"
+      IsLogging: true
+      S3BucketName: !Ref CloudTrailLogsBucket
+      IncludeGlobalServiceEvents: true
+      IsMultiRegionTrail: true
+      EnableLogFileValidation: true
+      CloudWatchLogsLogGroupArn: !GetAtt CloudTrailLogGroup.Arn
+      CloudWatchLogsRoleArn: !GetAtt CloudTrailCWRole.Arn
+      EventSelectors:
+        - ReadWriteType: All
+          IncludeManagementEvents: true
+          DataResources:
+            - Type: AWS::S3::Object
+              Values: ["arn:aws:s3:::"]
+
+  # CLOUDWATCH LOGS: Log Group for CloudTrail
+
+  CloudTrailLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/cloudtrail/threat-detection-${Environment}"
+      RetentionInDays: 90
+
+  CloudTrailCWRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "CloudTrailToCloudWatch-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CloudTrailCloudWatchPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt CloudTrailLogGroup.Arn
+
+  # CloudWatch subscription filter -> Lambda
+  CloudTrailLogGroupSubscription:
+    Type: AWS::Logs::SubscriptionFilter
+    Properties:
+      LogGroupName: !Ref CloudTrailLogGroup
+      FilterPattern: ""  # All events
+      DestinationArn: !GetAtt ThreatDetectionLambda.Arn
+
+  # SNS: Alert Topic
+
+  ThreatAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "threat-detection-alerts-${Environment}"
+      DisplayName: "Cloud Threat Detection Alerts"
+      KmsMasterKeyId: alias/aws/sns
+
+  ThreatAlertEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref ThreatAlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmailAddress
+
+  # SQS: Alert Queue (for SIEM/ticketing integration)
+
+  ThreatAlertQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "threat-detection-alerts-${Environment}.fifo"
+      FifoQueue: true
+      ContentBasedDeduplication: false
+      MessageRetentionPeriod: 1209600  # 14 days
+      VisibilityTimeout: 300
+      KmsMasterKeyId: alias/aws/sqs
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ThreatAlertDLQ.Arn
+        maxReceiveCount: 3
+
+  ThreatAlertDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "threat-detection-dlq-${Environment}.fifo"
+      FifoQueue: true
+      ContentBasedDeduplication: false
+      MessageRetentionPeriod: 1209600
+
+  # DYNAMODB: Findings Storage
+
+  ThreatFindingsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "threat-detection-findings-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      AttributeDefinitions:
+        - AttributeName: finding_id
+          AttributeType: S
+        - AttributeName: account_id
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+        - AttributeName: severity
+          AttributeType: S
+      KeySchema:
+        - AttributeName: finding_id
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: account-severity-index
+          KeySchema:
+            - AttributeName: account_id
+              KeyType: HASH
+            - AttributeName: severity
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # LAMBDA: Threat Detection Function
+
+  ThreatDetectionLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "cloud-threat-detection-${Environment}"
+      Description: "Processes CloudTrail events and generates prioritized threat alerts"
+      Runtime: python3.12
+      Handler: lambda_handler.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 300
+      MemorySize: 512
+      ReservedConcurrentExecutions: 10
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          SNS_ALERT_TOPIC_ARN: !Ref ThreatAlertTopic
+          SQS_ALERT_QUEUE_URL: !Ref ThreatAlertQueue
+          ALERTS_DYNAMODB_TABLE: !Ref ThreatFindingsTable
+          BASELINE_REGIONS: !Ref BaselineRegions
+          LOG_LEVEL: INFO
+      Layers:
+        - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:threat-detection-deps:1"
+
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/cloud-threat-detection-${Environment}"
+      RetentionInDays: 30
+
+  LambdaCloudWatchPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ThreatDetectionLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: logs.amazonaws.com
+      SourceArn: !GetAtt CloudTrailLogGroup.Arn
+
+  # IAM: Lambda Execution Role
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "ThreatDetectionLambdaRole-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ThreatDetectionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: SNSPublish
+                Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref ThreatAlertTopic
+              - Sid: SQSSend
+                Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt ThreatAlertQueue.Arn
+              - Sid: DynamoDBWrite
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt ThreatFindingsTable.Arn
+                  - !Sub "${ThreatFindingsTable.Arn}/index/*"
+
+  # CLOUDWATCH ALARMS: Operational Monitoring
+
+  LambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "threat-detection-lambda-errors-${Environment}"
+      AlarmDescription: "Lambda function errors in threat detection pipeline"
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ThreatDetectionLambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref ThreatAlertTopic
+
+  HighSeverityFindingsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "threat-detection-high-severity-${Environment}"
+      AlarmDescription: "High volume of high/critical severity findings"
+      MetricName: high_severity_count
+      Namespace: ThreatDetection/Pipeline
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref ThreatAlertTopic
+
+Outputs:
+  LambdaFunctionArn:
+    Description: Threat Detection Lambda ARN
+    Value: !GetAtt ThreatDetectionLambda.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-LambdaArn"
+
+  AlertTopicArn:
+    Description: SNS Alert Topic ARN
+    Value: !Ref ThreatAlertTopic
+    Export:
+      Name: !Sub "${AWS::StackName}-AlertTopicArn"
+
+  FindingsTableName:
+    Description: DynamoDB Findings Table
+    Value: !Ref ThreatFindingsTable
+    Export:
+      Name: !Sub "${AWS::StackName}-FindingsTable"
+
+  CloudTrailLogGroupName:
+    Description: CloudTrail CloudWatch Log Group
+    Value: !Ref CloudTrailLogGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-LogGroup"
