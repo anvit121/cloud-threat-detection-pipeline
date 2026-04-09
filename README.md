@@ -1,6 +1,6 @@
 # Cloud Threat Detection Pipeline (AWS)
 
-> **Real-time threat detection for AWS environments using CloudTrail, CloudWatch, and Lambda — with MITRE ATT&CK-mapped detection rules and multi-factor risk scoring.**
+> **Real-time threat detection for AWS environments using CloudTrail, CloudWatch, and Lambda - with MITRE ATT&CK-mapped detection rules and multi-factor risk scoring.**
 
 ---
 
