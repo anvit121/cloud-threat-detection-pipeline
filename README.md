@@ -1,1 +1,0 @@
-# cloud-threat-detection-pipeline
