@@ -16,7 +16,6 @@ logger = get_logger(__name__)
 SNS_SEVERITY_THRESHOLD = {"CRITICAL", "HIGH"}
 SQS_ALL_SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW"}
 
-
 class AlertManager:
 
     def __init__(self, sns_topic_arn: str = None, sqs_queue_url: str = None, dynamodb_table: str = None):
