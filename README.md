@@ -1,19 +1,14 @@
-# ☁️ Cloud Threat Detection Pipeline (AWS)
+# Cloud Threat Detection Pipeline (AWS)
 
 > **Real-time threat detection for AWS environments using CloudTrail, CloudWatch, and Lambda — with MITRE ATT&CK-mapped detection rules and multi-factor risk scoring.**
-
-[![CI/CD](https://github.com/YOUR_USERNAME/cloud-threat-detection/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/YOUR_USERNAME/cloud-threat-detection/actions)
-[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://python.org)
-[![Coverage](https://img.shields.io/badge/coverage-85%25-green.svg)](#)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
 
 ## Overview
 
-This project implements a **production-grade cloud threat detection pipeline** on AWS that ingests CloudTrail API logs in real time, applies modular detection rules mapped to the [MITRE ATT&CK Cloud Matrix](https://attack.mitre.org/matrices/enterprise/cloud/), scores each finding using a multi-factor risk engine, and routes prioritized alerts to SNS, SQS, and DynamoDB.
+This project implements a **production-grade cloud threat detection pipeline** on AWS that ingests CloudTrail API logs in real time, applies modular detection rules mapped to the [MITRE ATT&CK Cloud Matrix](https://attack.mitre.org/matrices/enterprise/cloud/), scores each finding using a multi-factor risk engine and routes prioritized alerts to SNS, SQS and DynamoDB.
 
-The pipeline processes thousands of log events per invocation and generates actionable, prioritized alerts — reducing analyst fatigue by surfacing the highest-risk findings first.
+The pipeline processes thousands of log events per invocation and generates actionable, prioritized alerts which can help to reduce analyst fatigue by surfacing the highest-risk findings first.
 
 ---
 
@@ -22,23 +17,23 @@ The pipeline processes thousands of log events per invocation and generates acti
 ```
 CloudTrail (Multi-Region)
         │ API logs (all management events)
-        ▼
+        ↓
 CloudWatch Logs (/aws/cloudtrail/...)
         │ Subscription Filter (all events)
-        ▼
-Lambda (Python 3.12) ←── CloudFormation IaC
+        ↓
+Lambda (Python 3.12) <- CloudFormation IaC
         │
-        ├── EventParser        → Decode CloudTrail Records batch
-        ├── DetectorChain      → 4 modular threat detectors
+        ├── EventParser        -> Decode CloudTrail Records batch
+        ├── DetectorChain      -> 4 modular threat detectors
         │     ├── PrivilegeEscalationDetector   (MITRE T1098)
         │     ├── UnusualRegionDetector          (MITRE T1535)
         │     ├── CredentialAbuseDetector        (MITRE T1078)
         │     └── DataExfiltrationDetector       (MITRE T1530)
-        ├── RiskScorer         → 0-100 multi-factor risk score
-        └── AlertManager       → Severity-based routing
-              ├── SNS Topic    → Email / PagerDuty / Slack
-              ├── SQS FIFO     → SIEM / ticketing integration
-              └── DynamoDB     → Audit trail (90-day TTL)
+        ├── RiskScorer         -> 0-100 multi-factor risk score
+        └── AlertManager       -> Severity-based routing
+              ├── SNS Topic    -> Email / PagerDuty / Slack
+              ├── SQS FIFO     -> SIEM / ticketing integration
+              └── DynamoDB     -> Audit trail (90-day TTL)
 ```
 
 ---
@@ -48,9 +43,9 @@ Lambda (Python 3.12) ←── CloudFormation IaC
 | Detector | MITRE Technique | Severity Range | Description |
 |---|---|---|---|
 | **Privilege Escalation** | T1098, T1078.004 | MEDIUM → CRITICAL | IAM policy attachments, role manipulation, access key creation |
-| **Unusual Region** | T1535 | MEDIUM → CRITICAL | API calls from non-baseline AWS regions |
-| **Credential Abuse** | T1078, T1552 | MEDIUM → CRITICAL | Root usage, IAM recon, no-MFA console logins |
-| **Data Exfiltration** | T1530, T1562.008 | LOW → CRITICAL | S3 exposure, secrets access, CloudTrail deletion |
+| **Unusual Region** | T1535 | MEDIUM -> CRITICAL | API calls from non-baseline AWS regions |
+| **Credential Abuse** | T1078, T1552 | MEDIUM -> CRITICAL | Root usage, IAM recon, no-MFA console logins |
+| **Data Exfiltration** | T1530, T1562.008 | LOW -> CRITICAL | S3 exposure, secrets access, CloudTrail deletion |
 
 ### Risk Scoring
 
@@ -61,10 +56,10 @@ Each finding receives a composite **0–100 risk score** using:
 - **Deduplication** within execution window to reduce alert noise
 
 ```
-CRITICAL ≥ 80   →  SNS + SQS + DynamoDB (immediate page)
-HIGH     60–79  →  SNS + SQS + DynamoDB
-MEDIUM   40–59  →  SQS + DynamoDB
-LOW      0–39   →  DynamoDB only
+CRITICAL ≥ 80   ->  SNS + SQS + DynamoDB (immediate page)
+HIGH     60–79  ->  SNS + SQS + DynamoDB
+MEDIUM   40–59  ->  SQS + DynamoDB
+LOW      0–39   ->  DynamoDB only
 ```
 
 ---
@@ -89,16 +84,16 @@ cloud-threat-detection/
 │       └── logger.py               # Structured JSON logging
 ├── infrastructure/
 │   └── cloudformation/
-│       └── threat-detection-stack.yaml   # Full IaC (CloudTrail → Lambda → SNS)
+│       └── threat-detection-stack.yaml   # Full IaC (CloudTrail -> Lambda -> SNS)
 ├── tests/
 │   └── unit/
 │       └── test_detectors.py       # 25+ unit tests, 85%+ coverage
 ├── scripts/
 │   ├── deploy.sh                   # One-command deployment
-│   └── generate_test_events.py     # Synthetic attack scenario generator
+│   └── generate_test_events.py     # Synthetic attack scenario
 ├── .github/
 │   └── workflows/
-│       └── ci-cd.yml               # Lint → Test → Build → Deploy pipeline
+│       └── ci-cd.yml               # Lint -> Test -> Build -> Deploy pipeline
 └── requirements.txt
 ```
 
@@ -115,8 +110,8 @@ cloud-threat-detection/
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/cloud-threat-detection.git
-cd cloud-threat-detection
+git clone https://github.com/anvit121/cloud-threat-detection-pipeline.git
+cd cloud-threat-detection-pipeline
 pip install -r requirements.txt
 ```
 
@@ -130,7 +125,7 @@ PYTHONPATH=src pytest tests/ -v --cov=src --cov-report=term-missing
 
 ```bash
 export LAMBDA_CODE_BUCKET=your-deployment-bucket
-export ALERT_EMAIL=security@yourcompany.com
+export ALERT_EMAIL=security@company.com
 export BASELINE_REGIONS="us-east-1,us-west-2"
 
 ./scripts/deploy.sh dev your-aws-profile us-east-1
@@ -140,7 +135,7 @@ The script will:
 1. Run unit tests
 2. Package Lambda + dependencies into a zip
 3. Upload to S3
-4. Deploy the CloudFormation stack (creates all AWS resources)
+4. Deploy the CloudFormation stack (this creates all AWS resources)
 5. Update the Lambda function code
 
 ### 4. Test with synthetic events
@@ -159,7 +154,7 @@ This generates a realistic CloudWatch Logs payload containing four attack scenar
 
 ## Detection Examples
 
-### Privilege Escalation → Administrator Access
+### Privilege Escalation -> Administrator Access
 
 ```json
 {
@@ -253,11 +248,3 @@ Deploy to Staging (auto)
 - [ ] **Terraform module** alternative to CloudFormation
 
 ---
-
-## License
-
-MIT License — see [LICENSE](LICENSE)
-
----
-
-*Built to demonstrate production-grade AWS threat detection engineering using CloudTrail, CloudWatch, Lambda, and the MITRE ATT&CK framework.*
