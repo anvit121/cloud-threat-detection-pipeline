@@ -16,7 +16,6 @@ ACCOUNT_ID = "123456789012"
 USERS = ["alice", "bob", "charlie", "eve-attacker"]
 REGIONS = ["us-east-1", "us-west-2", "eu-west-1", "ap-southeast-3", "af-south-1"]
 
-
 def make_event(event_name, event_source, user="alice", region="us-east-1",
                request_params=None, error_code=None, user_type="IAMUser"):
     event = {
