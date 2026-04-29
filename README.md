@@ -12,6 +12,13 @@ The pipeline processes thousands of log events per invocation and generates acti
 
 ---
 
+## Working
+
+CloudTrail events ingested -> detectors flag suspicious activity -> risk scored -> alerts routed by severity.
+
+### Test suite — 28 tests passing, 68% coverage
+![Test Results](docs/tests_output.png)
+
 ## Architecture
 
 ```
